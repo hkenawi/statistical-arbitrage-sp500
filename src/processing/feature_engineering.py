@@ -24,11 +24,12 @@ Paper parameters exactly reproduced:
     - No forward-filling; stocks with any NaN in their 31-feature window
       are excluded from that day's cross-section
 """
-import numpy as np
 import pandas as pd
 
 from tqdm import tqdm
 from pathlib import Path
+
+from src.processing.label_engineering import build_label_for_date
 
 # Directory structure
 root = Path(__file__).resolve().parents[1]
@@ -116,30 +117,6 @@ def build_features_for_date(t_idx: int,
     # (NaN propagates from missing returns in the price index.)
     feat = feat.dropna()
     return feat if len(feat) > 0 else None
-
-
-def build_label_for_date(t_idx: int,
-                         returns: pd.DataFrame,
-                         valid_permnos: pd.Index,) -> pd.Series | None:
-    """
-    Binary label Y^s_{t+1} = 1 if next-day return of stock s exceeds
-    the cross-sectional median return across all valid stocks on day t+1.
-
-    Section 4.2: classification target, no regression.
-    No lookahead: we use returns at t+1 only, never beyond.
-    """
-    if t_idx + 1 >= len(returns):
-        return None
-
-    r_next = returns.iloc[t_idx + 1][valid_permnos].dropna()
-    if len(r_next) == 0:
-        return None
-
-    median = r_next.median()
-    label = (r_next > median).astype(np.int8)
-    label.name = "label"
-    return label
-
 
 def build_batch(batch_idx: int,
                 train_date_positions: list[int],

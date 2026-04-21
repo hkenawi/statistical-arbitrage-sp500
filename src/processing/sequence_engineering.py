@@ -28,11 +28,12 @@ Design decisions:
       are excluded from that day's cross-section
 """
 import os
-import numpy as np
 import pandas as pd
 
 from tqdm import tqdm
 from pathlib import Path
+
+from src.processing.label_engineering import build_label_for_date
 
 # Directory structure
 root = Path(__file__).resolve().parents[1]
@@ -67,7 +68,6 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     print(f"  Universe: {valid.shape[0]:,} days × {valid.shape[1]:,} permnos")
     print(f"  Sequence length: {SEQUENCE_LENGTH} days")
     return returns, valid
-
 
 def build_sequence_for_date(t_idx: int,
                             returns: pd.DataFrame,
@@ -106,32 +106,6 @@ def build_sequence_for_date(t_idx: int,
     # Drop any stock that has a NaN anywhere in its sequence window
     seq = seq.dropna()
     return seq if len(seq) > 0 else None
-
-
-def build_label_for_date(t_idx: int,
-                         returns: pd.DataFrame,
-                         valid_permnos: pd.Index) -> pd.Series | None:
-    """
-    Binary label Y^s_{t+1} = 1 if next-day return of stock s exceeds
-    the cross-sectional median return across all valid stocks on day t+1.
-
-    Identical to feature_engineering.py — ensures sequences plug directly
-    into the same backtest engine as the baseline models.
-
-    No lookahead: uses returns at t+1 only, never beyond.
-    """
-    if t_idx + 1 >= len(returns):
-        return None
-
-    r_next = returns.iloc[t_idx + 1][valid_permnos].dropna()
-    if len(r_next) == 0:
-        return None
-
-    median = r_next.median()
-    label = (r_next > median).astype(np.int8)
-    label.name = "label"
-    return label
-
 
 def build_batch(batch_idx: int,
                 train_date_positions: list[int],
@@ -232,7 +206,7 @@ def main():
     all_dates = returns.index
 
     first_trade_idx = all_dates.searchsorted(FIRST_TRADING_DAY)
-    last_trade_idx  = all_dates.searchsorted(LAST_TRADING_DAY, side="right") - 1
+    last_trade_idx = all_dates.searchsorted(LAST_TRADING_DAY, side="right") - 1
 
     # Guard: ensure every training day can look back SEQUENCE_LENGTH days
     first_trade_idx = max(first_trade_idx, MAX_LAG)
