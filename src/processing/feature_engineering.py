@@ -33,7 +33,7 @@ from pathlib import Path
 # Directory structure
 root = Path(__file__).resolve().parents[1]
 proc_dir = root/"data"/"processed"
-feat_dir = root/"data"/ "features"
+feat_dir = root/"data"/"features"
 feat_dir.mkdir(parents=True, exist_ok=True)
 
 # Section 4.2: lags m ∈ {1,...,20} ∪ {40,60,...,240} → 31 features total
