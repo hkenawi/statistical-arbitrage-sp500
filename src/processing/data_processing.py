@@ -86,23 +86,16 @@ def clean_returns(returns: pd.DataFrame) -> pd.DataFrame:
     """
     Basic cleaning of the raw returns matrix:
       - Drop columns (permnos) that are entirely NaN
-      - Winsorize extreme returns at 1st/99th percentile (per day)
-        to handle delisting returns and data errors
       - Keep all dates (full history needed for 750-day lookback)
+      - No winsorization — matches Krauss et al. (2016) who apply no
+        sanitization beyond dropping holidays, noting that data quality
+        concerns are concentrated in small-cap stocks not present in the S&P 500
     """
     print("Cleaning returns...")
 
-    # Drop entirely empty columns
     n_before = returns.shape[1]
     returns = returns.dropna(axis=1, how="all")
     print(f"  Dropped {n_before - returns.shape[1]} all-NaN permnos")
-
-    # Winsorize per day to handle extreme values
-    # (e.g. CRSP delisting returns can be -1.0 or very large)
-    print("  Winsorizing at 1st/99th percentile per day...")
-    lower = returns.quantile(0.01, axis=1)
-    upper = returns.quantile(0.99, axis=1)
-    returns = returns.clip(lower=lower, upper=upper, axis=0)
 
     out_path = proc_dir/"returns_clean.parquet"
     returns.to_parquet(out_path)
@@ -134,9 +127,7 @@ def build_valid_universe(returns: pd.DataFrame,
     not_nan = returns_aligned.notna().astype(int)
     cum_valid = not_nan.cumsum()
     # rolling count of valid days in preceding `min_history` window
-    has_history = (
-        cum_valid - cum_valid.shift(min_history).fillna(0)
-    ) >= min_history
+    has_history = (returns_aligned.isna().rolling(window=min_history, min_periods=min_history).sum() == 0)
 
     # Restrict to trading period
     trading_mask = (
