@@ -45,6 +45,6 @@ def build_label_for_date(t_idx: int,
         return None
 
     median = r_next.median()
-    label  = (r_next > median).astype(np.int8)
+    label = (r_next > median).astype(np.int8)
     label.name = "label"
     return label
