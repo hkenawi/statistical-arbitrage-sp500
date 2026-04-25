@@ -221,7 +221,7 @@ def main():
     batches = []
     pos = 0
     while pos + TRADE_WINDOW <= total_trading_days:
-        trade_pos = trading_period_positions[pos : pos + TRADE_WINDOW]
+        trade_pos = trading_period_positions[pos: pos + TRADE_WINDOW]
 
         trade_start_global = trade_pos[0]
         train_end_global = trade_start_global - 1
