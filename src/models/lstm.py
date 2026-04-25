@@ -59,7 +59,7 @@ DEFAULTS = {
 
 class _LSTMNetwork(nn.Module):
     """
-    Internal PyTorch module — not used directly outside this file.
+    Internal PyTorch module. Not used directly outside this file.
     Instantiated and managed by LSTMModel.
 
     Architecture:
@@ -211,7 +211,7 @@ class LSTMModel(BaseModel):
             nn.utils.clip_grad_norm_(network.parameters(), max_norm=1.0)
             optimizer.step()
             total_loss += loss.item() * len(y_batch)
-        return total_loss / len(loader.dataset)
+        return total_loss/len(loader.dataset)
 
     def _evaluate(self,
                   network: _LSTMNetwork,
@@ -226,7 +226,7 @@ class LSTMModel(BaseModel):
                 probs = network(X_batch)
                 loss = criterion(probs, y_batch)
                 total_loss += loss.item() * len(y_batch)
-        return total_loss / len(loader.dataset)
+        return total_loss/len(loader.dataset)
 
     def _build_loaders(self,
                        X: np.ndarray,
@@ -241,23 +241,21 @@ class LSTMModel(BaseModel):
         X_t, y_t = self._to_tensor(X, y)
 
         if val_fraction is not None:
-            n_val    = int(len(X_t) * val_fraction)
-            n_train  = len(X_t) - n_val
+            n_val = int(len(X_t) * val_fraction)
+            n_train = len(X_t) - n_val
 
             X_tr, X_val = X_t[:n_train], X_t[n_train:]
             y_tr, y_val = y_t[:n_train], y_t[n_train:]
 
             train_loader = DataLoader(TensorDataset(X_tr, y_tr),
                                       batch_size=batch_size, shuffle=True)
-            val_loader   = DataLoader(TensorDataset(X_val, y_val),
-                                      batch_size=batch_size, shuffle=False)
+            val_loader = DataLoader(TensorDataset(X_val, y_val),
+                                    batch_size=batch_size, shuffle=False)
             return train_loader, val_loader
 
         train_loader = DataLoader(TensorDataset(X_t, y_t),
                                   batch_size=batch_size, shuffle=True)
         return train_loader, None
-
-    # ── BaseModel interface ────────────────────────────────────────────────────
 
     def tune(self,
              X_train: pd.DataFrame | np.ndarray,
@@ -274,28 +272,29 @@ class LSTMModel(BaseModel):
         dict of best hyperparameters
         """
         X_np = X_train.values if isinstance(X_train, pd.DataFrame) else np.array(X_train)
-        y_np = y_train.values if isinstance(y_train, pd.Series)    else np.array(y_train)
+        y_np = y_train.values if isinstance(y_train, pd.Series) else np.array(y_train)
 
         print(f"  Running Optuna study ({self.n_trials} trials)...")
 
         criterion = nn.BCELoss()
 
         def objective(trial: optuna.Trial) -> float:
-            hidden_size  = trial.suggest_categorical("hidden_size", [32, 64, 128, 256])
-            n_layers     = trial.suggest_int("n_layers", 1, 3)
-            dropout      = trial.suggest_float("dropout", 0.2, 0.5)
-            lr           = trial.suggest_float("lr", 1e-4, 1e-3, log=True)
-            batch_size   = trial.suggest_categorical("batch_size", [256, 512, 1024])
+            hidden_size = trial.suggest_categorical("hidden_size", [32, 64, 128, 256])
+            n_layers = trial.suggest_int("n_layers", 1, 3)
+            dropout = trial.suggest_float("dropout", 0.2, 0.5)
+            lr = trial.suggest_float("lr", 1e-4, 1e-3, log=True)
+            batch_size = trial.suggest_categorical("batch_size", [256, 512, 1024])
 
-            network   = _LSTMNetwork(hidden_size, n_layers, dropout).to(self.device)
+            network = _LSTMNetwork(hidden_size, n_layers, dropout).to(self.device)
             optimizer = torch.optim.Adam(network.parameters(), lr=lr)
 
-            train_loader, val_loader = self._build_loaders(
-                X_np, y_np, batch_size, val_fraction=self.val_fraction
-            )
+            train_loader, val_loader = self._build_loaders(X_np,
+                                                           y_np,
+                                                           batch_size,
+                                                           val_fraction=self.val_fraction)
 
             # Train for a reduced number of epochs during tuning for speed
-            tune_epochs = max(5, self.epochs // 4)
+            tune_epochs = max(5, self.epochs//4)
             for _ in range(tune_epochs):
                 self._train_epoch(network, train_loader, optimizer, criterion)
 
@@ -306,7 +305,7 @@ class LSTMModel(BaseModel):
         study.optimize(objective, n_trials=self.n_trials, show_progress_bar=True)
 
         best = study.best_params
-        # epochs is not tuned by Optuna — carry over from constructor
+        # epochs are not tuned by Optuna — carry over from constructor
         best["epochs"] = self.epochs
 
         # Save for reproducibility
@@ -315,7 +314,6 @@ class LSTMModel(BaseModel):
             json.dump(best, f, indent=2)
         print(f"  Best params saved → {PARAMS_PATH}")
         print(f"  Best params: {best}")
-
         return best
 
     def fit(self,
@@ -326,7 +324,7 @@ class LSTMModel(BaseModel):
 
         If use_tuner=True, runs Optuna first to find optimal hyperparameters,
         then trains the final model with those parameters on the full
-        training set. Otherwise uses the hyperparameters passed to __init__.
+        training set. Otherwise, uses the hyperparameters passed to __init__.
 
         Parameters
         ----------
@@ -334,29 +332,29 @@ class LSTMModel(BaseModel):
         y_train : shape (n_samples,) binary labels in {0, 1}
         """
         X_np = X_train.values if isinstance(X_train, pd.DataFrame) else np.array(X_train)
-        y_np = y_train.values if isinstance(y_train, pd.Series)    else np.array(y_train)
+        y_np = y_train.values if isinstance(y_train, pd.Series) else np.array(y_train)
 
         # Step 1: resolve hyperparameters
         if self.use_tuner:
             self.best_params = self.tune(X_train, y_train)
             hidden_size = self.best_params["hidden_size"]
-            n_layers    = self.best_params["n_layers"]
-            dropout     = self.best_params["dropout"]
-            lr          = self.best_params["lr"]
-            batch_size  = self.best_params["batch_size"]
-            epochs      = self.best_params["epochs"]
+            n_layers = self.best_params["n_layers"]
+            dropout = self.best_params["dropout"]
+            lr = self.best_params["lr"]
+            batch_size = self.best_params["batch_size"]
+            epochs = self.best_params["epochs"]
         else:
             hidden_size = self.hidden_size
-            n_layers    = self.n_layers
-            dropout     = self.dropout
-            lr          = self.lr
-            batch_size  = self.batch_size
-            epochs      = self.epochs
+            n_layers = self.n_layers
+            dropout = self.dropout
+            lr = self.lr
+            batch_size = self.batch_size
+            epochs = self.epochs
 
         # Step 2: build network and optimizer
-        self.network  = _LSTMNetwork(hidden_size, n_layers, dropout).to(self.device)
-        optimizer     = torch.optim.Adam(self.network.parameters(), lr=lr)
-        criterion     = nn.BCELoss()
+        self.network = _LSTMNetwork(hidden_size, n_layers, dropout).to(self.device)
+        optimizer = torch.optim.Adam(self.network.parameters(), lr=lr)
+        criterion = nn.BCELoss()
 
         # Step 3: train on the full training set (no val split for final training)
         train_loader, _ = self._build_loaders(X_np, y_np, batch_size)
@@ -366,9 +364,10 @@ class LSTMModel(BaseModel):
               f"dropout={dropout}, lr={lr}, batch={batch_size}")
 
         for epoch in range(1, epochs + 1):
-            train_loss = self._train_epoch(
-                self.network, train_loader, optimizer, criterion
-            )
+            train_loss = self._train_epoch(self.network,
+                                           train_loader,
+                                           optimizer,
+                                           criterion)
             if epoch % 5 == 0 or epoch == 1:
                 print(f"    Epoch {epoch:>3}/{epochs}  loss={train_loss:.4f}")
 
