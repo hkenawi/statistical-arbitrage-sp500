@@ -36,7 +36,7 @@ from pathlib import Path
 from src.processing.label_engineering import build_label_for_date
 
 # Directory structure
-root = Path(__file__).resolve().parents[1]
+root = Path(__file__).resolve().parents[2]
 proc_dir = root/"data"/"processed"
 feat_dir = root/"data"/"processed"/"features"
 feat_dir.mkdir(parents=True, exist_ok=True)
@@ -57,8 +57,8 @@ LAST_TRADING_DAY = "2015-10-31"
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load cleaned returns and valid-universe mask."""
     print("Loading processed data...")
-    returns = pd.read_parquet(proc_dir / "returns_clean.parquet")
-    valid = pd.read_parquet(proc_dir / "valid_universe.parquet")
+    returns = pd.read_parquet(proc_dir/"returns_clean.parquet")
+    valid = pd.read_parquet(proc_dir/"valid_universe.parquet")
 
     common = returns.columns.intersection(valid.columns)
     returns = returns[common]
@@ -124,17 +124,21 @@ def build_batch(batch_idx: int,
     """
     all_dates = returns.index
 
+    train_end_date = all_dates[train_date_positions[-1]]
+    valid_on_train_end = valid.loc[train_end_date]
+    valid_permnos = valid_on_train_end[valid_on_train_end == 1].index
+
+    if len(valid_permnos) == 0:
+        print(f"  Skipping batch {batch_idx:02d} — no valid permnos at {train_end_date.date()}.")
+        return
+
+    print(f"  Valid universe at {train_end_date.date()}: n = {len(valid_permnos)} stocks")
+
     def collect_window(date_positions):
         X_parts, y_parts, meta_parts = [], [], []
 
         for t_idx in tqdm(date_positions, leave=False, desc=f"  batch {batch_idx:02d}"):
             date = all_dates[t_idx]
-
-            valid_on_date = valid.loc[date]
-            valid_permnos = valid_on_date[valid_on_date == 1].index
-
-            if len(valid_permnos) == 0:
-                continue
 
             seq = build_sequence_for_date(t_idx, returns, valid_permnos)
             if seq is None:
@@ -179,9 +183,9 @@ def build_batch(batch_idx: int,
     # Save — prefixed with 'seq_' to distinguish from feature_engineering outputs
     prefix = feat_dir / f"seq_batch_{batch_idx:02d}"
     X_train.to_parquet(f"{prefix}_X_train.parquet")
-    y_train.to_parquet(f"{prefix}_y_train.parquet")
+    y_train.to_frame().to_parquet(f"{prefix}_y_train.parquet")
     X_trade.to_parquet(f"{prefix}_X_trade.parquet")
-    y_trade.to_parquet(f"{prefix}_y_trade.parquet")
+    y_trade.to_frame().to_parquet(f"{prefix}_y_trade.parquet")
     meta_trade.to_parquet(f"{prefix}_meta_trade.parquet")
 
     balance_train = y_train.mean()

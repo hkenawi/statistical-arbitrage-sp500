@@ -32,9 +32,9 @@ from pathlib import Path
 from src.processing.label_engineering import build_label_for_date
 
 # Directory structure
-root = Path(__file__).resolve().parents[1]
+root = Path(__file__).resolve().parents[2]
 proc_dir = root/"data"/"processed"
-feat_dir = root/"data"/"features"
+feat_dir = root/"data"/"processed"/"features"
 feat_dir.mkdir(parents=True, exist_ok=True)
 
 # Section 4.2: lags m ∈ {1,...,20} ∪ {40,60,...,240} → 31 features total
@@ -136,20 +136,23 @@ def build_batch(batch_idx: int,
     """
     all_dates = returns.index
 
+    train_end_date = all_dates[train_date_positions[-1]]
+    valid_on_train_end = valid.loc[train_end_date]
+    valid_permnos = valid_on_train_end[valid_on_train_end == 1].index
+
+    if len(valid_permnos) == 0:
+        print(f"  Skipping batch {batch_idx:02d} — no valid permnos at {train_end_date.date()}.")
+        return
+
+    print(f"  Valid universe at {train_end_date.date()}: n = {len(valid_permnos)} stocks")
+
     def collect_window(date_positions):
         X_parts, y_parts, meta_parts = [], [], []
 
         for t_idx in tqdm(date_positions, leave=False, desc=f"  batch {batch_idx:02d}"):
             date = all_dates[t_idx]
 
-            # Which permnos are valid on this date?
-            valid_on_date = valid.loc[date]
-            valid_permnos = valid_on_date[valid_on_date == 1].index
-
-            if len(valid_permnos) == 0:
-                continue
-
-            feat  = build_features_for_date(t_idx, price_index, valid_permnos)
+            feat = build_features_for_date(t_idx, price_index, valid_permnos)
             if feat is None:
                 continue
 
@@ -162,23 +165,21 @@ def build_batch(batch_idx: int,
             if len(common) == 0:
                 continue
 
-            feat  = feat.loc[common]
+            feat = feat.loc[common]
             label = label.loc[common]
 
             X_parts.append(feat)
             y_parts.append(label)
 
-            meta = pd.DataFrame({
-                "date":   date,
-                "permno": common,
-            })
+            meta = pd.DataFrame({"date":   date,
+                                 "permno": common,})
             meta_parts.append(meta)
 
         if not X_parts:
             return None, None, None
 
-        X    = pd.concat(X_parts)
-        y    = pd.concat(y_parts)
+        X = pd.concat(X_parts)
+        y = pd.concat(y_parts)
         meta = pd.concat(meta_parts, ignore_index=True)
         return X, y, meta
 
@@ -195,9 +196,9 @@ def build_batch(batch_idx: int,
     # Save
     prefix = feat_dir / f"batch_{batch_idx:02d}"
     X_train.to_parquet(f"{prefix}_X_train.parquet")
-    y_train.to_parquet(f"{prefix}_y_train.parquet")
+    y_train.to_frame().to_parquet(f"{prefix}_y_train.parquet")
     X_trade.to_parquet(f"{prefix}_X_trade.parquet")
-    y_trade.to_parquet(f"{prefix}_y_trade.parquet")
+    y_trade.to_frame().to_parquet(f"{prefix}_y_trade.parquet")
     meta_trade.to_parquet(f"{prefix}_meta_trade.parquet")
 
     print(f"  Train : {X_train.shape[0]:>8,} obs  |  "
