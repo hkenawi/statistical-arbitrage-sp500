@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Data — never commit to GitHub
+data/
+results/
+configs/lstm_best_params.json
+configs/cnn_best_params.json
