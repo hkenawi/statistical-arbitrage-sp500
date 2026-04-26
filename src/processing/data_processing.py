@@ -33,7 +33,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 # Setting the directory structure for saving outputs
-root = Path(__file__).resolve().parents[1]
+root = Path(__file__).resolve().parents[2]
 raw_dir = root/"data"/"raw"
 proc_dir = root/"data"/"processed"
 proc_dir.mkdir(parents=True,

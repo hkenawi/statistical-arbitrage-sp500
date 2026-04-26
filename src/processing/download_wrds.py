@@ -22,7 +22,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 # Setting the directory
-root = Path(__file__).resolve().parents[1]
+root = Path(__file__).resolve().parents[2]
 raw_dir = root/"data"/"raw"
 raw_dir.mkdir(parents=True,
               exist_ok=True)
