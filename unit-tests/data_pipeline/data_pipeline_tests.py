@@ -12,7 +12,7 @@ Checks:
 import pandas as pd
 from pathlib import Path
 
-proc_dir = Path(__file__).resolve().parents[1]/"data"/"processed"
+proc_dir = Path(__file__).resolve().parents[2]/"data"/"processed"
 
 # ── returns_clean ─────────────────────────────────────────────────────────────
 print("=" * 60)
