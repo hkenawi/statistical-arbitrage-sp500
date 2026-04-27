@@ -1,47 +1,44 @@
 # config.yaml — Central configuration for the pipeline
-# IEOR 4733: Algorithmic Trading — Krauss et al. (2016) Reproduction & Extension
-# =============================================================================
 # All pipeline parameters live here. main.py reads this file at startup.
-# =============================================================================
 
 # Data
 data:
-  raw_dir:       "data/raw"
+  raw_dir: "data/raw"
   processed_dir: "data/processed"
-  features_dir:  "data/features"           # output of feature_engineering.py (31-feature baselines)
-  seq_dir:       "data/processed/features" # output of sequence_engineering.py (LSTM/CNN sequences)
-  results_dir:   "results"
+  features_dir: "data/processed/features" # output of feature_engineering.py (31-feature baselines)
+  seq_dir: "data/processed/features"      # output of sequence_engineering.py (LSTM/CNN sequences)
+  results_dir: "results"
 
   # WRDS / CRSP download parameters
-  wrds_username_env: "WRDS_USERNAME"        # environment variable name holding your WRDS username
-  start_date: "1990-01-01"                  # download start — needs buffer before first trading day
-  end_date:   "2015-10-31"                  # download end — matches paper
+  wrds_username_env: "WRDS_USERNAME" # environment variable name holding your WRDS username
+  start_date: "1990-01-01"           # download start — needs buffer before first trading day
+  end_date: "2015-10-31"             # download end — matches paper
 
   # Raw file names (saved as parquet after download)
   constituents_file: "sp500_constituents.parquet"
-  returns_file:      "daily_returns.parquet"
+  returns_file: "daily_returns.parquet"
 
   # Processed file names
-  returns_clean_file:     "returns_clean.parquet"
+  returns_clean_file: "returns_clean.parquet"
   constituent_matrix_file: "constituent_matrix.parquet"
-  valid_universe_file:    "valid_universe.parquet"
+  valid_universe_file: "valid_universe.parquet"
 
 
 # Sliding window — Section 4.1 of Krauss et al. (2016)
 windows:
-  train_window:       750   # trading days (~3 years)
-  trade_window:       250   # trading days (~1 year)
-  n_batches:          23    # number of non-overlapping batches
-  first_trading_day:  "1992-12-01"
-  last_trading_day:   "2015-10-31"
+  train_window: 750  # trading days (~3 years)
+  trade_window: 250  # trading days (~1 year)
+  n_batches: 23      # number of non-overlapping batches
+  first_trading_day: "1992-12-01"
+  last_trading_day: "2015-10-31"
 
 
 # Features — Section 4.2 of Krauss et al. (2016)
+# 31 lags: R(1)–R(20) daily + R(40,60,...,240) monthly
 features:
-  # 31 lags: R(1)–R(20) daily + R(40,60,...,240) monthly
-  daily_lags:   [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+  daily_lags: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
   monthly_lags: [40,60,80,100,120,140,160,180,200,220,240]
-  max_lag:      240   # longest lookback — guards sequence start positions
+  max_lag: 240  # longest lookback — guards sequence start positions
 
 
 # Sequence parameters — LSTM / CNN extensions
@@ -53,60 +50,61 @@ sequences:
 
 # Trading / portfolio construction
 trading:
-  k: 10                         # top-k long, bottom-k short (paper baseline = 10)
+  k: 10                                    # top-k long, bottom-k short (paper baseline = 10)
   transaction_cost_per_half_turn: 0.0005   # 0.05% per share per half-turn (Avellaneda & Lee, 2010)
+
 
 # Models to run — set enabled: false to skip a model in the pipeline
 models:
   dnn:
     enabled: true
-    architecture: [31, 31, 10, 5, 2]   # 31-31-10-5-2 as in the paper
+    architecture: [31, 31, 10, 5, 2] # 31-31-10-5-2 as in the paper
     dropout_hidden: 0.5
-    dropout_input:  0.1
-    l1_lambda:      0.00001
-    epochs:         400
-    activation:     "maxout"
-    seed:           1
+    dropout_input: 0.1
+    l1_lambda: 0.00001
+    epochs: 400
+    activation: "maxout"
+    seed: 5
 
   gbt:
     enabled: true
-    n_trees:        100
-    max_depth:      3
-    learning_rate:  0.1
-    col_sample:     0.5            # mGBT = 15 ≈ half of 31 features
-    seed:           1
+    n_trees: 100
+    max_depth: 3
+    learning_rate: 0.1
+    col_sample: 0.5 # mGBT = 15 ≈ half of 31 features
+    seed: 5
 
   random_forest:
     enabled: true
-    n_trees:        1000
-    max_depth:      20
-    col_sample:     "sqrt"         # mRAF = floor(sqrt(31)) ≈ 5
-    seed:           1
+    n_trees: 1000
+    max_depth: 20
+    col_sample: "sqrt" # mRAF = floor(sqrt(31)) ≈ 5
+    seed: 5
 
   lstm:
     enabled: true
-    use_tuner:      false          # set true to run Optuna before training
-    n_trials:       50             # Optuna trials (only used when use_tuner=true)
-    val_fraction:   0.2            # chronological val split for Optuna
-    hidden_size:    64
-    n_layers:       2
-    dropout:        0.3
-    lr:             0.001
-    batch_size:     512
-    epochs:         20
+    use_tuner: false   # set true to run Optuna before training
+    n_trials: 50       # Optuna trials (only used when use_tuner=true)
+    val_fraction: 0.2  # chronological val split for Optuna
+    hidden_size: 64
+    n_layers: 2
+    dropout: 0.3
+    lr: 0.001
+    batch_size: 512
+    epochs: 20
 
   cnn:
     enabled: true
-    use_tuner:      false
-    n_trials:       50
-    val_fraction:   0.2
-    num_filters:    64
-    kernel_size:    5
-    num_layers:     2
-    dropout:        0.3
-    lr:             0.001
-    batch_size:     512
-    epochs:         20
+    use_tuner: false
+    n_trials: 50
+    val_fraction: 0.2
+    num_filters: 64
+    kernel_size: 5
+    num_layers: 2
+    dropout: 0.3
+    lr: 0.001
+    batch_size: 512
+    epochs: 20
 
   ensemble:
     enabled: true
@@ -117,15 +115,15 @@ models:
 
 # Sensitivity analysis — robustness checks (Section 5.4.3 of the paper)
 sensitivity:
-  enabled: false        # set true to run sensitivity sweeps after main pipeline
+  enabled: false # set true to run sensitivity sweeps after main pipeline
   k_values: [10, 50, 100, 150, 200]
   dnn_architectures:
-    - [31, 15, 10, 5, 2]    # alternative 1 — fewer neurons
-    - [31, 31, 10, 5, 2]    # baseline
-    - [31, 62, 10, 5, 2]    # alternative 2 — more neurons
-    - [31, 31, 2]           # alternative 3 — single hidden layer, no dropout
+    - [31, 15, 10, 5, 2]  # alternative 1 — fewer neurons
+    - [31, 31, 10, 5, 2]  # baseline
+    - [31, 62, 10, 5, 2]  # alternative 2 — more neurons
+    - [31, 31, 2]         # alternative 3 — single hidden layer, no dropout
 
 
 # Reproducibility
 reproducibility:
-  global_seed: 1        # applied to numpy, torch, sklearn at pipeline start
+  global_seed: 5  # applied to numpy, torch, sklearn at pipeline start
