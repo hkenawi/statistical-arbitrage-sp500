@@ -163,9 +163,7 @@ def main():
 
     # Stage 5 — Train + infer
     all_models = ["dnn", "gbt", "random_forest", "lstm", "cnn", "ensemble"]
-    models_to_run = args.models or [
-        m for m in all_models if cfg["models"].get(m, {}).get("enabled", False)
-    ]
+    models_to_run = args.models or [m for m in all_models if cfg["models"].get(m, {}).get("enabled", False)]
     batches_to_run = [args.batch] if args.batch is not None else list(range(n_batches))
 
     print(f"Models  : {models_to_run}")
