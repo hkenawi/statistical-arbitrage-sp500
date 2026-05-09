@@ -68,27 +68,21 @@ def attach_next_returns(predictions: pd.DataFrame, returns: pd.DataFrame) -> pd.
 
     next_returns = ret.shift(-1)
 
-    rows = []
-    for date, group in pred.groupby("date"):
-        if date not in next_returns.index:
-            continue
+    next_ret_long = (
+        next_returns
+        .stack()
+        .rename("next_return")
+        .reset_index()
+    )
+    next_ret_long.columns = ["date", "permno", "next_return"]
+    next_ret_long["date"] = pd.to_datetime(next_ret_long["date"])
+    next_ret_long["permno"] = next_ret_long["permno"].astype(int)
 
-        permnos = group["permno"].values
-        available = [p for p in permnos if p in next_returns.columns]
+    out = pred.merge(next_ret_long, on=["date", "permno"], how="inner")
 
-        if len(available) == 0:
-            continue
-
-        r = next_returns.loc[date, available]
-
-        temp = group[group["permno"].isin(available)].copy()
-        temp["next_return"] = temp["permno"].map(r.to_dict())
-        rows.append(temp)
-
-    if not rows:
+    if out.empty:
         raise ValueError("No matching dates/permnos between predictions and returns.")
 
-    out = pd.concat(rows, ignore_index=True)
     out = out.dropna(subset=["score", "next_return"])
 
     return out
@@ -228,6 +222,51 @@ def compute_metrics(daily_results: pd.DataFrame, return_col: str = "net_return")
         "num_days": len(r),
     }
 
+SUBPERIODS = {
+    "pre_ml_boom":    ("1992-12-01", "2001-03-31"),
+    "moderation":     ("2001-04-01", "2008-08-31"),
+    "gfc":            ("2008-09-01", "2009-12-31"),
+    "post_gfc":       ("2010-01-01", "2015-10-31"),
+}
+
+
+def compute_metrics_by_subperiod(
+    daily_results: pd.DataFrame,
+    return_col: str = "net_return",
+    subperiods: dict = SUBPERIODS,
+) -> pd.DataFrame:
+    """
+    Compute performance metrics broken out by sub-period,
+    matching Krauss et al. Table 4.
+
+    Returns a DataFrame with one row per sub-period.
+    """
+    daily_results = daily_results.copy()
+    daily_results["date"] = pd.to_datetime(daily_results["date"])
+
+    rows = []
+    for label, (start, end) in subperiods.items():
+        mask = (daily_results["date"] >= start) & (daily_results["date"] <= end)
+        subset = daily_results[mask]
+
+        if subset.empty:
+            continue
+
+        metrics = compute_metrics(subset, return_col=return_col)
+        metrics["subperiod"] = label
+        metrics["start"] = start
+        metrics["end"] = end
+        metrics["n_days"] = len(subset)
+        rows.append(metrics)
+
+    if not rows:
+        raise ValueError("No sub-period data found — check date ranges.")
+
+    result = pd.DataFrame(rows)
+    cols = ["subperiod", "start", "end", "n_days"] + [
+        c for c in result.columns if c not in ("subperiod", "start", "end", "n_days")
+    ]
+    return result[cols]
 
 def save_results(
     daily_results: pd.DataFrame,
@@ -242,14 +281,20 @@ def save_results(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    daily_path = out / f"{model_name}_daily_returns.csv"
-    metrics_path = out / f"{model_name}_metrics.csv"
+    daily_path = out/f"{model_name}_daily_returns.csv"
+    metrics_path = out/f"{model_name}_metrics.csv"
+    equity_path = out/f"{model_name}_equity_curve.csv"
 
     daily_results.to_csv(daily_path, index=False)
     pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
 
-    print(f"Saved daily returns: {daily_path}")
-    print(f"Saved metrics: {metrics_path}")
+    # Save equity curve separately for easy dashboard ingestion
+    equity = daily_results[["date", "cum_gross_return", "cum_net_return"]].copy()
+    equity.to_csv(equity_path, index=False)
+
+    print(f"Saved daily returns:  {daily_path}")
+    print(f"Saved metrics:        {metrics_path}")
+    print(f"Saved equity curve:   {equity_path}")
 
 
 if __name__ == "__main__":
