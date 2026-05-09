@@ -112,6 +112,16 @@ models:
     # LSTM and CNN are NOT included in the paper's ensemble
     base_models: ["dnn", "gbt", "random_forest"]
 
+# Training params for CNN & LSTM
+training:
+  checkpoint_every: 5
+  early_stopping:
+    patience: 5
+    min_delta: 0.0001
+  scheduler:
+    factor: 0.5
+    patience: 3
+
 
 # Sensitivity analysis — robustness checks (Section 5.4.3 of the paper)
 sensitivity:
