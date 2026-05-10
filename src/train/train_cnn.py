@@ -29,7 +29,7 @@ _FEAT_DIR = _ROOT/"data"/"processed"/"features"
 _CKPT_DIR = Path(__file__).resolve().parent/"checkpoints"/"cnn"
 
 def load_config() -> dict:
-    with open(_ROOT / "configs" / "config.yaml") as f:
+    with open(_ROOT/"config"/"config.yaml") as f:
         return yaml.safe_load(f)
 
 def set_seed(seed: int) -> None:
