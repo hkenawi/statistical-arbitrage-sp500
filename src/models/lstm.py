@@ -184,8 +184,8 @@ class LSTMModel(BaseModel):
         Reshapes X from (n, seq_len) to (n, seq_len, 1) for the LSTM.
         """
         X_np = X.values if isinstance(X, pd.DataFrame) else np.array(X)
-        X_t = torch.tensor(X_np, dtype=torch.float32).unsqueeze(-1)  # (n, seq_len, 1)
-        X_t = X_t.to(self.device)
+        X_np = X_np.astype(np.float64)
+        X_t = torch.tensor(X_np, dtype=torch.float32).unsqueeze(-1)
 
         if y is not None:
             y_np = y.values if isinstance(y, pd.Series) else np.array(y)
@@ -193,8 +193,8 @@ class LSTMModel(BaseModel):
             return X_t, y_t
         return X_t
 
-    def _train_epoch(self,
-                     network: _LSTMNetwork,
+    @staticmethod
+    def _train_epoch(network: _LSTMNetwork,
                      loader: DataLoader,
                      optimizer: torch.optim.Optimizer,
                      criterion: nn.Module) -> float:
@@ -213,8 +213,8 @@ class LSTMModel(BaseModel):
             total_loss += loss.item() * len(y_batch)
         return total_loss/len(loader.dataset)
 
-    def _evaluate(self,
-                  network: _LSTMNetwork,
+    @staticmethod
+    def _evaluate(network: _LSTMNetwork,
                   loader: DataLoader,
                   criterion: nn.Module) -> float:
         """Evaluate on a dataloader, return mean loss."""
@@ -318,23 +318,25 @@ class LSTMModel(BaseModel):
 
     def fit(self,
             X_train: pd.DataFrame | np.ndarray,
-            y_train: pd.Series | np.ndarray) -> None:
+            y_train: pd.Series | np.ndarray,
+            checkpoint_dir: Path | None = None,
+            checkpoint_every: int = 5) -> None:
         """
         Train the LSTM on one sliding window training set.
 
-        If use_tuner=True, runs Optuna first to find optimal hyperparameters,
-        then trains the final model with those parameters on the full
-        training set. Otherwise, uses the hyperparameters passed to __init__.
-
         Parameters
         ----------
-        X_train : shape (n_samples, sequence_length)
-        y_train : shape (n_samples,) binary labels in {0, 1}
+        X_train          : shape (n_samples, sequence_length)
+        y_train          : shape (n_samples,) binary labels in {0, 1}
+        checkpoint_dir   : directory for checkpoint files. If None, no
+                           checkpoints are written.
+        checkpoint_every : write epoch_NNN.pt every N epochs.
+                           latest.pt is always written each epoch.
         """
         X_np = X_train.values if isinstance(X_train, pd.DataFrame) else np.array(X_train)
         y_np = y_train.values if isinstance(y_train, pd.Series) else np.array(y_train)
 
-        # Step 1: resolve hyperparameters
+        # Resolve hyperparameters
         if self.use_tuner:
             self.best_params = self.tune(X_train, y_train)
             hidden_size = self.best_params["hidden_size"]
@@ -351,27 +353,42 @@ class LSTMModel(BaseModel):
             batch_size = self.batch_size
             epochs = self.epochs
 
-        # Step 2: build network and optimizer
+        # Build network and optimizer
         self.network = _LSTMNetwork(hidden_size, n_layers, dropout).to(self.device)
         optimizer = torch.optim.Adam(self.network.parameters(), lr=lr)
         criterion = nn.BCELoss()
-
-        # Step 3: train on the full training set (no val split for final training)
         train_loader, _ = self._build_loaders(X_np, y_np, batch_size)
 
-        print(f"  Training LSTM — {epochs} epochs, "
+        print(f"  Training LSTM — {epochs} epochs | "
               f"hidden={hidden_size}, layers={n_layers}, "
               f"dropout={dropout}, lr={lr}, batch={batch_size}")
+        if checkpoint_dir:
+            checkpoint_dir = Path(checkpoint_dir)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            print(f"  Checkpoints → {checkpoint_dir} "
+                  f"(every {checkpoint_every} epochs + latest.pt)")
 
         for epoch in range(1, epochs + 1):
-            train_loss = self._train_epoch(self.network,
-                                           train_loader,
-                                           optimizer,
-                                           criterion)
-            if epoch % 5 == 0 or epoch == 1:
-                print(f"    Epoch {epoch:>3}/{epochs}  loss={train_loss:.4f}")
+            train_loss = self._train_epoch(
+                self.network, train_loader, optimizer, criterion
+            )
 
-        print(f"  Training complete.")
+            if epoch % 5 == 0 or epoch == 1:
+                print(f"    Epoch {epoch:>3}/{epochs}  loss={train_loss:.6f}")
+
+            if checkpoint_dir:
+                torch.save(self.network.state_dict(),
+                           checkpoint_dir / "latest.pt")
+                if epoch % checkpoint_every == 0:
+                    torch.save(self.network.state_dict(),
+                               checkpoint_dir / f"epoch_{epoch:03d}.pt")
+                    print(f"    ✓ Checkpoint → epoch_{epoch:03d}.pt")
+
+        if checkpoint_dir:
+            torch.save(self.network.state_dict(), checkpoint_dir / "final.pt")
+            print(f"    ✓ Final checkpoint saved.")
+
+        print("  Training complete.")
 
     def predict_proba(self,
                       X: pd.DataFrame | np.ndarray) -> np.ndarray:

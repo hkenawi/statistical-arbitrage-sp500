@@ -360,26 +360,28 @@ class CNNModel(BaseModel):
 
     def fit(self,
             X_train: pd.DataFrame | np.ndarray,
-            y_train: pd.Series | np.ndarray) -> None:
+            y_train: pd.Series | np.ndarray,
+            checkpoint_dir: Path | None = None,
+            checkpoint_every: int = 5) -> None:
         """
         Train the CNN on one sliding window training set.
 
-        If use_tuner=True, runs Optuna first to find optimal hyperparameters,
-        then trains the final model with those parameters on the full
-        training set. Otherwise uses the hyperparameters passed to __init__.
-
         Parameters
         ----------
-        X_train : shape (n_samples, sequence_length)
-        y_train : shape (n_samples,) binary labels in {0, 1}
+        X_train          : shape (n_samples, sequence_length)
+        y_train          : shape (n_samples,) binary labels in {0, 1}
+        checkpoint_dir   : directory for checkpoint files. If None, no
+                           checkpoints are written.
+        checkpoint_every : write epoch_NNN.pt every N epochs.
+                           latest.pt is always written each epoch.
         """
         X_np = X_train.values if isinstance(X_train, pd.DataFrame) else np.array(X_train)
-        y_np = y_train.values if isinstance(y_train, pd.Series)    else np.array(y_train)
+        y_np = y_train.values if isinstance(y_train, pd.Series) else np.array(y_train)
+        X_np = X_np.astype(np.float32)
 
-        # Infer sequence length from data
         self.seq_len = X_np.shape[1]
 
-        # Step 1: resolve hyperparameters
+        # Resolve hyperparameters
         if self.use_tuner:
             self.best_params = self.tune(X_train, y_train)
             num_filters = self.best_params["num_filters"]
@@ -398,28 +400,47 @@ class CNNModel(BaseModel):
             batch_size = self.batch_size
             epochs = self.epochs
 
-        # Step 2: build network and optimizer
-        self.network = _CNNNetwork(self.seq_len, num_filters, kernel_size,
-                                   num_layers, dropout).to(self.device)
+        # Build network and optimier
+        self.network = _CNNNetwork(self.seq_len,
+                                   num_filters,
+                                   kernel_size,
+                                   num_layers,
+                                   dropout).to(self.device)
         optimizer = torch.optim.Adam(self.network.parameters(), lr=lr)
         criterion = nn.BCELoss()
-
-        # Step 3: train on the full training set
         train_loader, _ = self._build_loaders(X_np, y_np, batch_size)
 
         print(f"  Training CNN — {epochs} epochs, "
               f"filters={num_filters}, kernel={kernel_size}, "
               f"layers={num_layers}, dropout={dropout}, "
               f"lr={lr}, batch={batch_size}")
+        if checkpoint_dir:
+            checkpoint_dir = Path(checkpoint_dir)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            print(f"  Checkpoints → {checkpoint_dir} "
+                  f"(every {checkpoint_every} epochs + latest.pt)")
 
         for epoch in range(1, epochs + 1):
-            train_loss = self._train_epoch(self.network,
-                                           train_loader,
-                                           optimizer,
-                                           criterion)
+            train_loss = self._train_epoch(
+                self.network, train_loader, optimizer, criterion
+            )
+
             if epoch % 5 == 0 or epoch == 1:
-                print(f"    Epoch {epoch:>3}/{epochs}  loss={train_loss:.4f}")
-        print(f"  Training complete.")
+                print(f"    Epoch {epoch:>3}/{epochs}  loss={train_loss:.6f}")
+
+            if checkpoint_dir:
+                torch.save(self.network.state_dict(),
+                           checkpoint_dir / "latest.pt")
+                if epoch % checkpoint_every == 0:
+                    torch.save(self.network.state_dict(),
+                               checkpoint_dir / f"epoch_{epoch:03d}.pt")
+                    print(f"    ✓ Checkpoint → epoch_{epoch:03d}.pt")
+
+        if checkpoint_dir:
+            torch.save(self.network.state_dict(), checkpoint_dir / "final.pt")
+            print(f"    ✓ Final checkpoint saved.")
+
+        print("  Training complete.")
 
     def predict_proba(self,
                       X: pd.DataFrame | np.ndarray) -> np.ndarray:
