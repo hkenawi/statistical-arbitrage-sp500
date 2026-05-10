@@ -25,6 +25,18 @@ Key paper details reproduced here:
     - 400 training epochs
     - Seed = 5 for reproducibility
 
+Checkpointing:
+    fit() accepts checkpoint_dir and checkpoint_every arguments, matching
+    the interface of LSTMModel. On each epoch, latest.pt is written so
+    that training can be inspected at any point. Every checkpoint_every
+    epochs an additional epoch_NNN.pt snapshot is written. At the end of
+    training, final.pt is written. All files contain the raw network
+    state_dict so they can be reloaded with:
+
+        model = DNNModel(...)
+        model.network = _DNNNetwork(...)
+        model.network.load_state_dict(torch.load("epoch_005.pt"))
+
 Input:
     X of shape (n_samples, 31) — 31 lagged return features per observation:
     R(1)–R(20) at daily resolution, then R(40), R(60), …, R(240) at monthly.
@@ -38,6 +50,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.models.base import BaseModel
@@ -47,7 +60,7 @@ DEFAULTS = {
     "architecture": [31, 31, 10, 5, 2],  # layer sizes including input & output
     "dropout_hidden": 0.5,               # dropout on all hidden layers
     "dropout_input": 0.1,                # dropout on input layer
-    "l1_lambda": 1e-5,                   # L1 regularisation strength
+    "l1_lambda": 1e-5,                   # L1 regularization strength
     "epochs": 400,
     "lr": 1e-3,                          # Adam default — not specified in paper
     "batch_size": 512,
@@ -192,6 +205,12 @@ class DNNModel(BaseModel):
     model.fit(X_train, y_train)
     probs = model.predict_proba(X_trade)
 
+    # With checkpointing — same interface as LSTMModel
+    model = DNNModel(epochs=20)
+    model.fit(X_train, y_train, checkpoint_dir=Path("checkpoints/dnn/batch_00"),
+              checkpoint_every=5)
+    probs = model.predict_proba(X_trade)
+
     # Custom architecture
     model = DNNModel(architecture=[31, 62, 10, 5, 2], dropout_hidden=0.3)
     model.fit(X_train, y_train)
@@ -271,9 +290,40 @@ class DNNModel(BaseModel):
 
         return total_loss / len(loader.dataset)
 
+    def _save_checkpoint(self,
+                         checkpoint_dir: Path,
+                         epoch: int,
+                         checkpoint_every: int,
+                         final: bool = False) -> None:
+        """
+        Write checkpoint files to checkpoint_dir.
+
+        Always writes latest.pt so training state is never more than one
+        epoch stale. Writes epoch_NNN.pt every checkpoint_every epochs.
+        Writes final.pt when final=True (called once after the last epoch).
+
+        Parameters
+        ----------
+        checkpoint_dir   : directory that must already exist
+        epoch            : current epoch number (1-indexed)
+        checkpoint_every : period for named epoch snapshots
+        final            : if True, write final.pt instead of epoch_NNN.pt
+        """
+        torch.save(self.network.state_dict(), checkpoint_dir / "latest.pt")
+
+        if final:
+            torch.save(self.network.state_dict(), checkpoint_dir / "final.pt")
+            print(f"    ✓ Final checkpoint saved.")
+        elif epoch % checkpoint_every == 0:
+            name = f"epoch_{epoch:03d}.pt"
+            torch.save(self.network.state_dict(), checkpoint_dir / name)
+            print(f"    ✓ Checkpoint → {name}")
+
     def fit(self,
             X_train: pd.DataFrame | np.ndarray,
-            y_train: pd.Series | np.ndarray) -> None:
+            y_train: pd.Series | np.ndarray,
+            checkpoint_dir: Path | None = None,
+            checkpoint_every: int = 5) -> None:
         """
         Train the DNN on one sliding window training set.
 
@@ -282,8 +332,12 @@ class DNNModel(BaseModel):
 
         Parameters
         ----------
-        X_train : shape (n_samples, 31) — 31 lag features per observation
-        y_train : shape (n_samples,) — binary labels in {0, 1}
+        X_train          : shape (n_samples, 31) — 31 lag features per observation
+        y_train          : shape (n_samples,) — binary labels in {0, 1}
+        checkpoint_dir   : directory for checkpoint files. If None, no
+                           checkpoints are written. Mirrors LSTMModel interface.
+        checkpoint_every : write epoch_NNN.pt every N epochs (default 5).
+                           latest.pt is always written each epoch.
         """
         self._set_seed()
 
@@ -313,10 +367,24 @@ class DNNModel(BaseModel):
               f"dropout_input={self.dropout_input}, "
               f"l1={self.l1_lambda}")
 
+        if checkpoint_dir is not None:
+            checkpoint_dir = Path(checkpoint_dir)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            print(f"  Checkpoints → {checkpoint_dir} "
+                  f"(every {checkpoint_every} epochs + latest.pt)")
+
         for epoch in range(1, self.epochs + 1):
             train_loss = self._train_epoch(loader, optimizer, criterion)
+
             if epoch % 50 == 0 or epoch == 1:
                 print(f"    Epoch {epoch:>3}/{self.epochs}  loss={train_loss:.4f}")
+
+            if checkpoint_dir is not None:
+                self._save_checkpoint(checkpoint_dir, epoch, checkpoint_every)
+
+        if checkpoint_dir is not None:
+            self._save_checkpoint(checkpoint_dir, self.epochs, checkpoint_every,
+                                  final=True)
 
         print("  Training complete.")
 

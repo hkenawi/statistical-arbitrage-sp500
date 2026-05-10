@@ -15,6 +15,26 @@ Key paper details reproduced here (Section 4.3.3):
     - max_features = "sqrt" — mRAF = floor(sqrt(31)) ≈ 5 features per split
     - seed = 1 for reproducibility (paper states seed fixed to 1)
 
+Checkpointing:
+    fit() accepts checkpoint_dir and checkpoint_every arguments, matching
+    the interface of LSTMModel, DNNModel, and GBTModel. Because sklearn's
+    RandomForestClassifier does not expose a per-tree callback, checkpointing
+    is achieved by training in incremental batches using warm_start=True.
+    After each batch of checkpoint_every trees, the partially-trained forest
+    is serialised to disk with joblib.
+
+    Layout written to checkpoint_dir per batch:
+        latest.joblib          — overwritten every checkpoint interval
+        trees_NNNN.joblib      — snapshot after NNNN total trees are built
+        final.joblib           — written once after all trees complete
+        metadata.json          — hyperparams + timestamp for reproducibility
+
+    Reloading a checkpoint:
+        import joblib
+        model = RandomForestModel()
+        model.model = joblib.load("checkpoints/random_forest/batch_00/final.joblib")
+        probs = model.predict_proba(X_trade)
+
 Hyperparameter tuning:
     When use_tuner=True, fit() automatically runs an Optuna study on a
     chronological validation split of the training data before training the
@@ -31,10 +51,12 @@ Output:
     for each observation — identical interface to all other models.
 """
 import json
+import joblib
 import numpy as np
 import pandas as pd
 import optuna
 
+from datetime import datetime
 from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import log_loss
@@ -102,6 +124,13 @@ class RandomForestModel(BaseModel):
     model = RandomForestModel(use_tuner=True, n_trials=50)
     model.fit(X_train, y_train)
     probs = model.predict_proba(X_trade)
+
+    # With checkpointing — same interface as LSTMModel / DNNModel / GBTModel
+    model = RandomForestModel(n_trees=1000)
+    model.fit(X_train, y_train,
+              checkpoint_dir=Path("checkpoints/random_forest/batch_00"),
+              checkpoint_every=5)
+    probs = model.predict_proba(X_trade)
     """
 
     def __init__(self,
@@ -139,13 +168,20 @@ class RandomForestModel(BaseModel):
     def _build_model(self,
                      n_trees: int,
                      max_depth: int,
-                     col_sample: str | float) -> RandomForestClassifier:
+                     col_sample: str | float,
+                     warm_start: bool = False) -> RandomForestClassifier:
         """
         Instantiate a RandomForestClassifier with the given hyperparameters.
 
         Uses entropy criterion to match the classification behaviour described
         in the paper. n_jobs=-1 exploits all available cores — RAF tree
         building is embarrassingly parallel (each tree is fully independent).
+
+        Parameters
+        ----------
+        warm_start : if True, the returned classifier is configured to add
+                     trees to an existing ensemble rather than starting fresh.
+                     Used internally by fit() when checkpointing is enabled.
         """
         return RandomForestClassifier(
             n_estimators=n_trees,
@@ -154,7 +190,52 @@ class RandomForestModel(BaseModel):
             criterion="entropy",
             random_state=self.seed,
             n_jobs=self.n_jobs,
+            warm_start=warm_start,
         )
+
+    def _save_checkpoint(self,
+                         checkpoint_dir: Path,
+                         trees_done: int,
+                         checkpoint_every: int,
+                         params: dict,
+                         final: bool = False) -> None:
+        """
+        Persist the current model to checkpoint_dir.
+
+        RandomForestClassifier is serialised with joblib. Naming mirrors
+        LSTMModel / DNNModel (latest / named snapshot / final) but uses
+        trees_NNNN.joblib instead of epoch_NNN.pt or round_NNN.joblib to
+        make the checkpoint self-documenting.
+
+        A metadata.json sidecar is kept in the directory so checkpoints
+        are self-describing without unpickling the model.
+
+        Parameters
+        ----------
+        checkpoint_dir   : directory that must already exist
+        trees_done       : total number of trees built so far
+        checkpoint_every : period for named snapshots
+        params           : hyperparameter dict — written to metadata.json
+        final            : if True, write final.joblib
+        """
+        joblib.dump(self.model, checkpoint_dir / "latest.joblib")
+
+        if final:
+            joblib.dump(self.model, checkpoint_dir / "final.joblib")
+            print(f"    ✓ Final checkpoint saved.")
+        elif trees_done % checkpoint_every == 0:
+            name = f"trees_{trees_done:04d}.joblib"
+            joblib.dump(self.model, checkpoint_dir / name)
+            print(f"    ✓ Checkpoint → {name}")
+
+        metadata = {
+            "model": "RandomForestModel",
+            "trees_done": trees_done,
+            "params": params,
+            "saved_at": datetime.utcnow().isoformat(),
+        }
+        with open(checkpoint_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
 
     def tune(self,
              X_train: pd.DataFrame | np.ndarray,
@@ -212,7 +293,9 @@ class RandomForestModel(BaseModel):
 
     def fit(self,
             X_train: pd.DataFrame | np.ndarray,
-            y_train: pd.Series | np.ndarray) -> None:
+            y_train: pd.Series | np.ndarray,
+            checkpoint_dir: Path | None = None,
+            checkpoint_every: int = 5) -> None:
         """
         Train the Random Forest on one sliding window training set.
 
@@ -220,14 +303,21 @@ class RandomForestModel(BaseModel):
         then trains the final model with those parameters on the full
         training set. Otherwise uses the paper's fixed hyperparameters.
 
-        RAF is not prone to overfitting (Breiman, 2001), so training is done
-        on the full window without a held-out validation set — consistent with
-        the paper's approach.
+        When checkpoint_dir is provided, training proceeds in incremental
+        batches of checkpoint_every trees using sklearn's warm_start mechanism.
+        This produces identical results to a single training run (same random
+        state, same tree construction) while allowing snapshots to be written
+        at each interval.
 
         Parameters
         ----------
-        X_train : shape (n_samples, 31) — 31 lag features per observation
-        y_train : shape (n_samples,) — binary labels in {0, 1}
+        X_train          : shape (n_samples, 31) — 31 lag features per observation
+        y_train          : shape (n_samples,) — binary labels in {0, 1}
+        checkpoint_dir   : directory for checkpoint files. If None, no
+                           checkpoints are written. Mirrors LSTMModel interface.
+        checkpoint_every : number of trees per checkpoint interval (default 5).
+                           Note: with n_trees=1000, this produces 200 snapshots.
+                           A value of 50–100 is more practical for the full run.
         """
         X_np, y_np = self._to_numpy(X_train, y_train)
 
@@ -242,14 +332,55 @@ class RandomForestModel(BaseModel):
             max_depth = self.max_depth
             col_sample = self.col_sample
 
-        self.model = self._build_model(n_trees, max_depth, col_sample)
+        params = dict(n_trees=n_trees, max_depth=max_depth, col_sample=col_sample)
 
         print(f"  Training Random Forest — {n_trees} trees, "
               f"max_depth={max_depth}, "
               f"col_sample={col_sample} "
               f"(mRAF ≈ {int(31 ** 0.5)} features per split)")
 
-        self.model.fit(X_np, y_np)
+        if checkpoint_dir is not None:
+            checkpoint_dir = Path(checkpoint_dir)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            print(f"  Checkpoints → {checkpoint_dir} "
+                  f"(every {checkpoint_every} trees + latest.joblib)")
+
+        if checkpoint_dir is None:
+            # No checkpointing — single training call, simplest path.
+            # RAF is not prone to overfitting so no validation split needed.
+            self.model = self._build_model(n_trees, max_depth, col_sample)
+            self.model.fit(X_np, y_np)
+        else:
+            # Incremental training via warm_start. The classifier grows the
+            # forest by `block` trees per call; n_estimators is increased
+            # progressively. Random state is fixed so results are identical
+            # to a single training run with the full n_trees.
+            self.model = self._build_model(
+                n_trees=checkpoint_every,  # start with first block
+                max_depth=max_depth,
+                col_sample=col_sample,
+                warm_start=True,
+            )
+            trees_done = 0
+
+            while trees_done < n_trees:
+                block = min(checkpoint_every, n_trees - trees_done)
+                target = trees_done + block
+
+                # Grow the forest to `target` total trees
+                self.model.n_estimators = target
+                self.model.fit(X_np, y_np)
+
+                trees_done = target
+                is_final = trees_done >= n_trees
+
+                self._save_checkpoint(
+                    checkpoint_dir, trees_done, checkpoint_every, params,
+                    final=is_final,
+                )
+
+                print(f"    Trees {trees_done:>5}/{n_trees}  "
+                      f"(block of {block} complete)")
 
         print("  Training complete.")
 

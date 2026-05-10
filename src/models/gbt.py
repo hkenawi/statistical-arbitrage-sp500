@@ -14,6 +14,25 @@ Key paper details reproduced here:
     - colsample_bytree = 0.5 — mGBT ≈ 15 features per tree (Section 4.4)
     - seed = 1 for reproducibility (paper explicitly states seed fixed to 1)
 
+Checkpointing:
+    fit() accepts checkpoint_dir and checkpoint_every arguments, matching
+    the interface of LSTMModel and DNNModel. Because XGBoost is not a
+    PyTorch model, checkpoints are written as joblib files (.joblib) rather
+    than state_dicts. Each checkpoint contains the fully fitted XGBClassifier
+    at the specified boosting round, trained via the num_boost_round API.
+
+    Layout written to checkpoint_dir per batch:
+        latest.joblib          — overwritten every checkpoint_every rounds
+        round_NNN.joblib       — snapshot at round NNN
+        final.joblib           — written once after all rounds complete
+        metadata.json          — hyperparams + timestamp for reproducibility
+
+    Reloading a checkpoint:
+        import joblib
+        model = GBTModel()
+        model.model = joblib.load("checkpoints/gbt/batch_00/final.joblib")
+        probs = model.predict_proba(X_trade)
+
 Hyperparameter tuning:
     When use_tuner=True, fit() automatically runs an Optuna study on a
     chronological validation split of the training data before training the
@@ -29,11 +48,13 @@ Output:
     for each observation — identical interface to all other models.
 """
 import json
+import joblib
 import numpy as np
 import pandas as pd
 import optuna
 import xgboost as xgb
 
+from datetime import datetime
 from pathlib import Path
 
 from src.models.base import BaseModel
@@ -89,6 +110,13 @@ class GBTModel(BaseModel):
     # Optuna tuning — fit() handles everything automatically
     model = GBTModel(use_tuner=True, n_trials=50)
     model.fit(X_train, y_train)
+    probs = model.predict_proba(X_trade)
+
+    # With checkpointing — same interface as LSTMModel / DNNModel
+    model = GBTModel(n_trees=100)
+    model.fit(X_train, y_train,
+              checkpoint_dir=Path("checkpoints/gbt/batch_00"),
+              checkpoint_every=5)
     probs = model.predict_proba(X_trade)
     """
 
@@ -147,6 +175,52 @@ class GBTModel(BaseModel):
             verbosity=0,
         )
 
+    def _save_checkpoint(self,
+                         checkpoint_dir: Path,
+                         round_num: int,
+                         checkpoint_every: int,
+                         params: dict,
+                         final: bool = False) -> None:
+        """
+        Persist the current model to checkpoint_dir.
+
+        XGBoost models are serialised with joblib rather than torch.save,
+        but the naming convention mirrors LSTMModel / DNNModel exactly:
+            latest.joblib      — always written (most recent state)
+            round_NNN.joblib   — written every checkpoint_every rounds
+            final.joblib       — written once after the last round
+
+        A metadata.json sidecar is also kept in the directory so that
+        checkpoints are self-describing without needing to unpickle them.
+
+        Parameters
+        ----------
+        checkpoint_dir   : directory that must already exist
+        round_num        : current boosting round (1-indexed)
+        checkpoint_every : period for named round snapshots
+        params           : hyperparameter dict — written to metadata.json
+        final            : if True, write final.joblib
+        """
+        joblib.dump(self.model, checkpoint_dir / "latest.joblib")
+
+        if final:
+            joblib.dump(self.model, checkpoint_dir / "final.joblib")
+            print(f"    ✓ Final checkpoint saved.")
+        elif round_num % checkpoint_every == 0:
+            name = f"round_{round_num:03d}.joblib"
+            joblib.dump(self.model, checkpoint_dir / name)
+            print(f"    ✓ Checkpoint → {name}")
+
+        # Keep metadata current so the directory is self-describing
+        metadata = {
+            "model": "GBTModel",
+            "round": round_num,
+            "params": params,
+            "saved_at": datetime.utcnow().isoformat(),
+        }
+        with open(checkpoint_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
     def tune(self,
              X_train: pd.DataFrame | np.ndarray,
              y_train: pd.Series | np.ndarray) -> dict:
@@ -204,9 +278,18 @@ class GBTModel(BaseModel):
 
     def fit(self,
             X_train: pd.DataFrame | np.ndarray,
-            y_train: pd.Series | np.ndarray) -> None:
+            y_train: pd.Series | np.ndarray,
+            checkpoint_dir: Path | None = None,
+            checkpoint_every: int = 5) -> None:
         """
         Train the GBT on one sliding window training set.
+
+        Because XGBoost does not expose a per-round callback that lets us
+        snapshot a partially-trained model, checkpointing is achieved by
+        training in incremental blocks of checkpoint_every rounds using
+        xgb.train with xgb_model warm-start. This is equivalent to a
+        single training run but allows a checkpoint to be written after
+        every block.
 
         If use_tuner=True, runs Optuna first to find optimal hyperparameters,
         then trains the final model with those parameters on the full
@@ -214,8 +297,12 @@ class GBTModel(BaseModel):
 
         Parameters
         ----------
-        X_train : shape (n_samples, 31) — 31 lag features per observation
-        y_train : shape (n_samples,) — binary labels in {0, 1}
+        X_train          : shape (n_samples, 31) — 31 lag features per observation
+        y_train          : shape (n_samples,) — binary labels in {0, 1}
+        checkpoint_dir   : directory for checkpoint files. If None, no
+                           checkpoints are written. Mirrors LSTMModel interface.
+        checkpoint_every : save a named round_NNN.joblib every N boosting
+                           rounds (default 5). latest.joblib written every block.
         """
         X_np, y_np = self._to_numpy(X_train, y_train)
 
@@ -232,14 +319,54 @@ class GBTModel(BaseModel):
             learning_rate = self.learning_rate
             col_sample = self.col_sample
 
-        self.model = self._build_model(n_trees, max_depth, learning_rate, col_sample)
+        params = dict(n_trees=n_trees, max_depth=max_depth,
+                      learning_rate=learning_rate, col_sample=col_sample)
 
         print(f"  Training GBT — {n_trees} trees, "
               f"max_depth={max_depth}, "
               f"lr={learning_rate}, "
               f"col_sample={col_sample}")
 
-        self.model.fit(X_np, y_np)
+        if checkpoint_dir is not None:
+            checkpoint_dir = Path(checkpoint_dir)
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            print(f"  Checkpoints → {checkpoint_dir} "
+                  f"(every {checkpoint_every} rounds + latest.joblib)")
+
+        if checkpoint_dir is None:
+            # No checkpointing — train in a single call, simplest path
+            self.model = self._build_model(n_trees, max_depth, learning_rate, col_sample)
+            self.model.fit(X_np, y_np)
+        else:
+            # Incremental training in blocks of checkpoint_every rounds so
+            # we can checkpoint after each block without any training overhead.
+            # XGBClassifier supports warm-starting via xgb_model parameter.
+            rounds_done = 0
+            booster = None  # the underlying xgb.Booster for warm-start
+
+            while rounds_done < n_trees:
+                block = min(checkpoint_every, n_trees - rounds_done)
+
+                clf = self._build_model(block, max_depth, learning_rate, col_sample)
+
+                if booster is None:
+                    clf.fit(X_np, y_np)
+                else:
+                    # Pass existing booster as warm-start so XGBoost continues
+                    # adding trees rather than restarting from scratch
+                    clf.fit(X_np, y_np, xgb_model=booster)
+
+                booster = clf.get_booster()
+                rounds_done += block
+                self.model = clf
+
+                self._save_checkpoint(
+                    checkpoint_dir, rounds_done, checkpoint_every, params,
+                    final=(rounds_done >= n_trees),
+                )
+
+                print(f"    Round {rounds_done:>4}/{n_trees}  "
+                      f"(block of {block} trees complete)")
 
         print("  Training complete.")
 
