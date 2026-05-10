@@ -189,12 +189,12 @@ class LSTMModel(BaseModel):
 
         if y is not None:
             y_np = y.values if isinstance(y, pd.Series) else np.array(y)
-            y_t = torch.tensor(y_np, dtype=torch.float32).to(self.device)
+            y_t = torch.tensor(y_np, dtype=torch.float32)
             return X_t, y_t
         return X_t
 
-    @staticmethod
-    def _train_epoch(network: _LSTMNetwork,
+    def _train_epoch(self,
+                     network: _LSTMNetwork,
                      loader: DataLoader,
                      optimizer: torch.optim.Optimizer,
                      criterion: nn.Module) -> float:
@@ -203,6 +203,8 @@ class LSTMModel(BaseModel):
         total_loss = 0.0
 
         for X_batch, y_batch in loader:
+            X_batch = X_batch.to(self.device)
+            y_batch = y_batch.to(self.device)
             optimizer.zero_grad()
             probs = network(X_batch)
             loss = criterion(probs, y_batch)
