@@ -66,7 +66,12 @@ from src.processing.download_wrds import (connect_wrds,
 from src.processing.data_processing import main as run_processing
 from src.processing.feature_engineering import main as run_features
 from src.processing.sequence_engineering import main as run_sequences
-# from src.backtest.engine import BacktestEngine
+from src.train.train_lstm import main as lstm_train
+from src.train.train_cnn import main as cnn_train
+from src.backtest.backtest import (run_backtest_from_predictions,
+                                   compute_metrics,
+                                   compute_metrics_by_subperiod,
+                                   save_results,)
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -74,6 +79,53 @@ sys.path.insert(0, str(ROOT))
 def load_config() -> dict:
     with open(ROOT / "configs" / "config.yaml") as f:
         return yaml.safe_load(f)
+
+def load_returns(proc_dir: Path, cfg: dict) -> pd.DataFrame:
+    """
+    Load returns_clean.parquet — wide matrix (index=date, columns=permno).
+    Required by the backtest engine to attach next-day realized returns.
+    """
+    path = proc_dir / cfg["data"]["returns_clean_file"]
+    if not path.exists():
+        raise FileNotFoundError(
+            f"returns_clean not found at {path}. "
+            "Run processing stage first."
+        )
+    ret = pd.read_parquet(path)
+    ret.index = pd.to_datetime(ret.index)
+    ret.columns = ret.columns.astype(int)
+    return ret
+
+def load_predictions_for_model(
+    res_dir: Path,
+    model_name: str,
+    batches: list[int],
+    n_batches: int,
+) -> pd.DataFrame | None:
+    """
+    Concatenate per-batch prediction parquets saved during Stage 5.
+    Returns None if no prediction files exist for this model yet.
+
+    Expected file format per batch:
+        results/{model_name}_batch_{i:02d}_predictions.parquet
+        columns: date, permno, score
+    """
+    frames = []
+    for i in batches:
+        p = res_dir / f"{model_name}_batch_{i:02d}_predictions.parquet"
+        if p.exists():
+            frames.append(pd.read_parquet(p))
+        else:
+            print(f"  [WARN] Missing prediction file: {p.name} — skipping batch {i}.")
+
+    if not frames:
+        print(f"  [SKIP] No prediction files found for {model_name}.")
+        return None
+
+    df = pd.concat(frames, ignore_index=True)
+    df["date"]   = pd.to_datetime(df["date"])
+    df["permno"] = df["permno"].astype(int)
+    return df.sort_values("date").reset_index(drop=True)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -161,7 +213,7 @@ def main():
         os.environ["SEQUENCE_LENGTH"] = str(cfg["sequences"]["sequence_length"])
         run_sequences()
 
-    # Stage 5 — Train + infer
+    # Stage 5 — Train
     all_models = ["dnn", "gbt", "random_forest", "lstm", "cnn", "ensemble"]
     models_to_run = args.models or [m for m in all_models if cfg["models"].get(m, {}).get("enabled", False)]
     batches_to_run = [args.batch] if args.batch is not None else list(range(n_batches))
@@ -169,35 +221,70 @@ def main():
     print(f"Models  : {models_to_run}")
     print(f"Batches : {batches_to_run}")
 
-    # STUB — plug in train module once model implementations are complete.
-    # Expected: returns dict mapping model_name -> list of per-batch dicts,
-    # each with keys: meta (DataFrame), proba (np.ndarray), y_trade (Series).
-    predictions: dict = {}
+    seq_trainers = {
+        "lstm": lstm_train,
+        "cnn":  cnn_train,
+    }
 
-    # Stage 6 — Backtest
-    # STUB — plug in BacktestEngine once implemented.
-    # engine = BacktestEngine(
-    #     k=cfg["trading"]["k"],
-    #     transaction_cost_per_half_turn=cfg["trading"]["transaction_cost_per_half_turn"],
-    # )
-    # backtest_results = {}
-    # for model_name, batch_list in predictions.items():
-    #     pred_df = pd.concat([
-    #         pd.DataFrame({
-    #             "date":   b["meta"]["date"].values,
-    #             "permno": b["meta"]["permno"].values,
-    #             "proba":  b["proba"],
-    #             "y_true": b["y_trade"].values,
-    #         }) for b in batch_list
-    #     ]).sort_values("date").reset_index(drop=True)
-    #     backtest_results[model_name] = engine.run(pred_df)
+    for model_name in models_to_run:
+        if model_name not in seq_trainers:
+            print(f"Training for {model_name} not yet wired into pipeline — skipping.")
+            continue
 
-    # Stage 7 — Results
-    # STUB — uncomment once backtest engine is complete.
-    # summary = pd.DataFrame(backtest_results).T
-    # summary.to_parquet(res_dir / "summary.parquet")
-    # summary.to_csv(res_dir / "summary.csv")
-    # print(summary.to_string())
+        print(f"\n{'═' * 60}")
+        print(f"{model_name.upper()} training")
+        seq_trainers[model_name]()
+
+        # Stage 6 — Backtest
+        k = cfg["trading"]["k"]
+        transaction_cost = cfg["trading"]["transaction_cost_per_half_turn"]
+
+        returns = load_returns(proc_dir, cfg)
+
+        backtest_results = {}  # model_name -> daily_results DataFrame
+        metrics_results = {}  # model_name -> metrics dict
+        subperiod_results = {}  # model_name -> subperiod DataFrame
+
+        for model_name in models_to_run:
+            print(f"\n{'─' * 60}")
+            print(f"Backtesting: {model_name.upper()}")
+
+            predictions = load_predictions_for_model(
+                res_dir, model_name, batches_to_run, n_batches
+            )
+            if predictions is None:
+                continue
+
+            try:
+                daily = run_backtest_from_predictions(
+                    predictions=predictions,
+                    returns=returns,
+                    k=k,
+                    transaction_cost=transaction_cost,
+                )
+            except ValueError as e:
+                print(f"  [ERROR] Backtest failed for {model_name}: {e}")
+                continue
+
+            metrics = compute_metrics(daily, return_col="net_return")
+            subperiods = compute_metrics_by_subperiod(daily, return_col="net_return")
+
+            backtest_results[model_name] = daily
+            metrics_results[model_name] = metrics
+            subperiod_results[model_name] = subperiods
+
+            save_results(
+                daily_results=daily,
+                metrics=metrics,
+                model_name=model_name,
+                output_dir=str(res_dir),
+            )
+
+            print(f"  Annualized Sharpe : {metrics['annualized_sharpe']:.4f}")
+            print(f"  Avg daily return  : {metrics['avg_daily_return']:.4%}")
+            print(f"  Max drawdown      : {metrics['max_drawdown']:.4%}")
+            print(f"  Win rate          : {metrics['win_rate']:.4%}")
+            print(f"  Num trading days  : {metrics['num_days']}")
 
     print("Pipeline complete.")
 
