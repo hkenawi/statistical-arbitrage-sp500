@@ -250,7 +250,8 @@ class DNNModel(BaseModel):
                    y: pd.Series | np.ndarray | None = None):
         """Convert numpy/pandas inputs to PyTorch tensors on the correct device."""
         X_np = X.values if isinstance(X, pd.DataFrame) else np.array(X)
-        X_t = torch.tensor(X_np, dtype=torch.float32).to(self.device)
+        X_np = X_np.astype(np.float64)
+        X_t = torch.tensor(X_np, dtype=torch.float32)
 
         if y is not None:
             y_np = y.values if isinstance(y, pd.Series) else np.array(y)
@@ -281,6 +282,8 @@ class DNNModel(BaseModel):
         total_loss = 0.0
 
         for X_batch, y_batch in loader:
+            X_batch = X_batch.to(self.device)
+            y_batch = y_batch.to(self.device)
             optimizer.zero_grad()
             probs = self.network(X_batch)
             loss = criterion(probs, y_batch) + self._l1_penalty()
