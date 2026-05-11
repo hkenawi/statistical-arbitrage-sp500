@@ -43,7 +43,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # Path to save best hyperparameters found by Optuna
 root = Path(__file__).resolve().parents[2]
-PARAMS_PATH = root / "configs"/"lstm_best_params.json"
+PARAMS_PATH = root/"config"/"lstm_best_params.json"
 
 # Default fixed hyperparameters — used when use_tuner=False
 # These are sensible starting points based on the time-series literature

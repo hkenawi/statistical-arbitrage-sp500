@@ -68,7 +68,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # Path to save best hyperparameters found by Optuna
 root = Path(__file__).resolve().parents[2]
-PARAMS_PATH = root / "configs" / "random_forest_best_params.json"
+PARAMS_PATH = root/"config"/"random_forest_best_params.json"
 
 # Default hyperparameters matching the paper exactly (Section 4.3.3)
 DEFAULTS = {

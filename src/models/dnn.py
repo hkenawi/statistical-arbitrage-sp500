@@ -309,14 +309,14 @@ class DNNModel(BaseModel):
         checkpoint_every : period for named epoch snapshots
         final            : if True, write final.pt instead of epoch_NNN.pt
         """
-        torch.save(self.network.state_dict(), checkpoint_dir / "latest.pt")
+        torch.save(self.network.state_dict(), checkpoint_dir/"latest.pt")
 
         if final:
-            torch.save(self.network.state_dict(), checkpoint_dir / "final.pt")
+            torch.save(self.network.state_dict(), checkpoint_dir/"final.pt")
             print(f"    ✓ Final checkpoint saved.")
         elif epoch % checkpoint_every == 0:
             name = f"epoch_{epoch:03d}.pt"
-            torch.save(self.network.state_dict(), checkpoint_dir / name)
+            torch.save(self.network.state_dict(), checkpoint_dir/name)
             print(f"    ✓ Checkpoint → {name}")
 
     def fit(self,
