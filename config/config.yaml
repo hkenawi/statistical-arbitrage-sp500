@@ -28,7 +28,7 @@ data:
 windows:
   train_window: 750  # trading days (~3 years)
   trade_window: 250  # trading days (~1 year)
-  n_batches: 23      # number of non-overlapping batches
+  n_batches: 22      # number of non-overlapping batches
   first_trading_day: "1992-12-01"
   last_trading_day: "2015-10-31"
 
