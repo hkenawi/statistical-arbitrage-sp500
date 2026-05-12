@@ -40,8 +40,7 @@ from src.models.random_forest import RandomForestModel
 from src.models.lstm import LSTMModel, _LSTMNetwork
 from src.models.cnn import CNNModel, _CNNNetwork
 
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# Helpers
 
 def _pt_path(ckpt_dir: Path) -> Path:
     """Return final.pt if it exists, else latest.pt. Raise if neither found."""
@@ -66,6 +65,7 @@ def _joblib_path(ckpt_dir: Path) -> Path:
         "Expected final.joblib or latest.joblib. Has the model been trained?"
     )
 
+# Model loaders
 
 def _load_dnn(ckpt_dir: Path, cfg: dict) -> DNNModel:
     """Reconstruct DNNModel and load weights from checkpoint."""
@@ -101,19 +101,19 @@ def _load_lstm(ckpt_dir: Path, cfg: dict) -> LSTMModel:
 
 
 def _load_cnn(ckpt_dir: Path, seq_len: int, cfg: dict) -> CNNModel:
-    """Reconstruct CNNModel and load weights from checkpoint."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     mcfg = cfg["models"].get("cnn", {})
     num_filters = mcfg.get("num_filters", 64)
     kernel_size = mcfg.get("kernel_size", 5)
-    num_layers  = mcfg.get("num_layers", 2)
-    dropout     = mcfg.get("dropout", 0.3)
+    num_layers = mcfg.get("num_layers", 2)
+    dropout = mcfg.get("dropout", 0.3)
 
     model = CNNModel(num_filters=num_filters, kernel_size=kernel_size,
-                     num_layers=num_layers, dropout=dropout)
+                     num_layers=num_layers, dropout=dropout, device=device)
     model.seq_len = seq_len
-    model.network = _CNNNetwork(seq_len, num_filters, kernel_size, num_layers, dropout)
+    model.network = _CNNNetwork(seq_len, num_filters, kernel_size, num_layers, dropout).to(device)
     model.network.load_state_dict(
-        torch.load(_pt_path(ckpt_dir), map_location="cpu", weights_only=True)
+        torch.load(_pt_path(ckpt_dir), map_location=device, weights_only=True)
     )
     model.network.eval()
     return model
@@ -133,7 +133,7 @@ def _load_rf(ckpt_dir: Path) -> RandomForestModel:
     return wrapper
 
 
-# ─── Feature / sequence loaders ───────────────────────────────────────────────
+# Feature / sequence loaders
 
 def _load_feature_batch(feat_dir: Path, batch_idx: int):
     """Load (X_trade, meta_trade) for lag-feature models (DNN / GBT / RAF)."""
@@ -151,7 +151,7 @@ def _load_seq_batch(feat_dir: Path, batch_idx: int):
     return X_trade, meta_trade
 
 
-# ─── Core inference routine ───────────────────────────────────────────────────
+# Core inference routine
 
 def _run_model_inference(
     model_name: str,
@@ -179,9 +179,9 @@ def _run_model_inference(
             print(f"  [SKIP] Batch {batch_idx:02d} — predictions already exist.")
             continue
 
-        ckpt_dir = ckpt_root / model_name / f"batch_{batch_idx:02d}"
+        ckpt_dir = ckpt_root/model_name/f"batch_{batch_idx:02d}"
 
-        # ── Load checkpoint ──────────────────────────────────────────────────
+        # Load checkpoint
         try:
             if is_seq_model:
                 X_trade, meta_trade = _load_seq_batch(feat_dir, batch_idx)
@@ -206,12 +206,12 @@ def _run_model_inference(
             print(f"  [ERROR] Batch {batch_idx:02d} — {e}")
             continue
 
-        # ── Inference ────────────────────────────────────────────────────────
+        # Inference
         print(f"  Batch {batch_idx:02d} — running predict_proba on "
               f"{len(X_trade):,} observations …")
         scores = model.predict_proba(X_trade)
 
-        # ── Save ─────────────────────────────────────────────────────────────
+        # Save
         pred_df = meta_trade[["date", "permno"]].copy()
         pred_df["score"] = scores
         pred_df["date"]   = pd.to_datetime(pred_df["date"])
@@ -220,7 +220,7 @@ def _run_model_inference(
         print(f"  [DONE]  Batch {batch_idx:02d} → {out_path.name}")
 
 
-# ─── Ensemble builders ────────────────────────────────────────────────────────
+# Ensemble builders
 
 def _build_ensemble(
     component_names: list[str],
@@ -248,7 +248,7 @@ def _build_ensemble(
             print(f"  [SKIP] Batch {batch_idx:02d} — ensemble predictions already exist.")
             continue
 
-        # ── Load component predictions ────────────────────────────────────────
+        # Load component predictions
         frames = {}
         missing = False
         for name in component_names:
@@ -266,7 +266,7 @@ def _build_ensemble(
         if missing:
             continue
 
-        # ── Average scores ────────────────────────────────────────────────────
+        # Average scores
         combined = pd.concat(frames.values(), axis=1)
         combined.columns = component_names
 
@@ -285,7 +285,7 @@ def _build_ensemble(
               f"({len(result):,} observations)")
 
 
-# ─── Public entry point ───────────────────────────────────────────────────────
+# Public entry point
 
 def run_inference(
     models_to_run: list[str],
@@ -335,7 +335,7 @@ def run_inference(
             force=force,
         )
 
-    # ── Ensemble construction ─────────────────────────────────────────────────
+    # Ensemble construction
     # Auto-build ensembles if explicitly requested, or if all components ran
     requested_or_available = set(base_to_run) | set(ensemble_to_run)
 
