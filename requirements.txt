@@ -9,3 +9,5 @@ optuna
 joblib
 scikit-learn
 xgboost
+streamlit
+plotly
