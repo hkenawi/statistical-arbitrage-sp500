@@ -49,7 +49,7 @@ Pipeline stages (in order):
                    to stdout in the same format as Table 2 of the paper.
 
 Skip / resume logic:
-    Stages 1–4 check for their expected output files before running. Stage 6
+    Stages 1–5 check for their expected output files before running. Stage 6
     skips any batch whose prediction parquet already exists. This means a run
     interrupted mid-inference can be resumed without reprocessing anything.
 
@@ -113,7 +113,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 # Base models that have their own checkpoints + training pipelines
-BASE_MODELS = ["dnn", "random_forest", "lstm", "cnn"]
+BASE_MODELS = ["dnn", "random_forest", "lstm", "cnn", "gbt"]
 # Ensemble labels — built from base model predictions, no separate training
 ENSEMBLE_MODELS = ["ensemble_base", "ensemble_seq"]
 ALL_MODELS = BASE_MODELS + ENSEMBLE_MODELS
@@ -164,6 +164,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force-inference", action="store_true",
         help="Re-run inference even if prediction files already exist.",
+    )
+    parser.add_argument(
+        "--inference-models", nargs="+",
+        choices=BASE_MODELS,
+        default=None,
+        help="Run inference only for these models. Other models will use existing prediction files."
     )
     return parser.parse_args()
 
@@ -408,7 +414,7 @@ def main():
             "cnn":  cnn_train,
             "gbt": gbt_train,
             "dnn": dnn_train,
-            "rf": rf_train,
+            "random_forest": rf_train,
         }
 
         for model_name in base_models_to_run:
@@ -432,15 +438,33 @@ def main():
     print(f"\n{'═' * 60}")
     print("Stage 6: Inference …")
 
-    run_inference(
-        models_to_run=models_to_run,
-        batches=batches_to_run,
-        ckpt_root=ckpt_root,
-        feat_dir=feat_dir,
-        res_dir=res_dir,
-        cfg=cfg,
-        force=args.force_inference,
+    all_predictions_exist = all(
+        (res_dir / f"{model_name}_batch_{b:02d}_predictions.parquet").exists()
+        for model_name in base_models_to_run
+        for b in batches_to_run
     )
+
+    if all_predictions_exist and not args.force_inference:
+        print("Stage 6: All prediction files exist — skipping inference.")
+    else:
+        run_inference(
+            models_to_run=models_to_run,
+            batches=batches_to_run,
+            ckpt_root=ckpt_root,
+            feat_dir=feat_dir,
+            res_dir=res_dir,
+            cfg=cfg,
+            force=args.force_inference,
+        )
+
+    # Always build ensembles — even if base inference was skipped
+    from src.inference.run_inference import _build_ensemble
+    if {"dnn", "gbt", "random_forest"}.issubset(set(models_to_run)):
+        _build_ensemble(["dnn", "gbt", "random_forest"], "ensemble_base",
+                        batches_to_run, res_dir, force=args.force_inference)
+    if {"lstm", "cnn"}.issubset(set(models_to_run)):
+        _build_ensemble(["lstm", "cnn"], "ensemble_seq",
+                        batches_to_run, res_dir, force=args.force_inference)
 
     # Stage 7 — Backtest
     print(f"\n{'═' * 60}")
