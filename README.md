@@ -203,10 +203,31 @@ Transaction costs of 0.05% per share per half-turn applied identically to all mo
 │   │   ├── lstm.py                     # LSTM extension 
 │   │   └── cnn.py                      # 1D CNN extension 
 │   │
-│   ├── backtest/                       # Evaluation layer 
+│   ├── backtest/                       # Evaluation layer
 │   │   ├── __init__.py
+│   │   └── backtest.py                 # Long/short backtest engine and metrics
 │   │
-│   └── app/                            # Streamlit dashboard
+│   ├── train/                          # Model training entry points
+│   │   ├── __init__.py
+│   │   ├── train_dnn.py
+│   │   ├── train_gbt.py
+│   │   ├── train_rf.py
+│   │   ├── train_lstm.py
+│   │   ├── train_cnn.py
+│   │   └── checkpoints/                # Saved model checkpoints by model family
+│   │
+│   ├── inference/                      # Prediction generation
+│   │   ├── __init__.py
+│   │   └── run_inference.py
+│   │
+│   └── app/                            # Streamlit dashboard page modules
+│       ├── __init__.py
+│       ├── overview.py
+│       ├── performance.py
+│       ├── risk.py
+│       ├── simulation.py
+│       ├── sensitivity.py
+│       └── utils.py
 │
 ├── data/
 │   ├── raw/                            # Raw CRSP downloads (parquet)
@@ -226,17 +247,49 @@ Transaction costs of 0.05% per share per half-turn applied identically to all mo
 │           ├── seq_batch_00_X_train.parquet
 │           └── ...                     # (23 batches × 5 files = 115 files for sequences)
 │
-├── results/
+├── results/                            # Backtest outputs, predictions, metrics, equity curves
+│   ├── summary.csv
+│   ├── summary.parquet
+│   ├── *_metrics.csv
+│   ├── *_daily_returns.csv
+│   ├── *_equity_curve.csv
+│   └── *_batch_XX_predictions.parquet
 │ 
-├── configs/
-│   ├── config.yaml                     # All hyperparams, window sizes, cost assumptions
-│   ├── lstm_best_params.json           # Best params from Optuna (generated at runtime)
-│   └── cnn_best_params.json            # Best params from Optuna (generated at runtime)
+├── config/
+│   └── config.yaml                     # All hyperparams, window sizes, cost assumptions
 │
-├── main.py                              # Single entry point — full pipeline end-to-end
+├── unit-tests/
+│   ├── __init__.py
+│   └── data_pipeline/
+│       ├── __init__.py
+│       ├── data_pipeline_tests.py
+│       └── model_inputs.py
+│
+├── app.py                              # Streamlit dashboard entry point
+├── main.py                             # Single entry point — full pipeline end-to-end
 ├── requirements.txt
 └── README.md
 ```
+
+---
+
+## Streamlit App Dashboard
+
+The repository includes a Streamlit dashboard for exploring the completed backtest outputs in `results/`.
+
+Run it with:
+```bash
+streamlit run app.py
+```
+
+The dashboard provides:
+- **Overview:** Paper benchmark results alongside this repository's model results
+- **Performance:** Daily returns, equity curves, and model comparison views
+- **Risk Diagnostics:** Drawdown and risk-focused model diagnostics
+- **Simulation:** Interactive portfolio simulation controls
+- **Sensitivity:** Parameter sensitivity analysis
+
+The sidebar supports model filtering across DNN, GBT, RAF, LSTM, CNN, and the base/sequence ensembles when their result files are available.
 
 ---
 
