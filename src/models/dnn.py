@@ -255,7 +255,7 @@ class DNNModel(BaseModel):
 
         if y is not None:
             y_np = y.values if isinstance(y, pd.Series) else np.array(y)
-            y_t = torch.tensor(y_np, dtype=torch.float32).to(self.device)
+            y_t = torch.tensor(y_np, dtype=torch.float32)
             return X_t, y_t
         return X_t
 
